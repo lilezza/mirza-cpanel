@@ -5,7 +5,7 @@
 #  Yek VPS + yek cPanel account. Chand bot = chand subdomain.
 #
 #  Install CLI (yekbar, ba root):
-#    curl -fsSL https://raw.githubusercontent.com/YOUR_USER/mirza-cpanel/main/mirza-cpanel.sh -o /usr/local/bin/mirza && chmod +x /usr/local/bin/mirza
+#    curl -fsSL https://raw.githubusercontent.com/lilezza/mirza-cpanel/main/mirza-cpanel.sh -o /usr/local/bin/mirza && chmod +x /usr/local/bin/mirza
 #    mirza
 #
 #  Ya mostaghim:
@@ -627,7 +627,7 @@ cat <<'TXT'
        Abr = DNS only (KHKESTARI)
 
   2) Nasb CLI:
-       curl -fsSL <LINK> | bash -s -- setup-cli
+       curl -fsSL https://raw.githubusercontent.com/lilezza/mirza-cpanel/main/mirza-cpanel.sh | bash -s -- setup-cli
        mirza
 
   3) Dakhel CLI:
@@ -706,7 +706,7 @@ case "$ARG" in
       do_self_install
     else
       bad "Baraye setup-cli file ro download kon, bad ejra kon:"
-      echo "  curl -fsSL <LINK> -o /usr/local/bin/mirza && chmod +x /usr/local/bin/mirza && mirza"
+      echo "  curl -fsSL https://raw.githubusercontent.com/lilezza/mirza-cpanel/main/mirza-cpanel.sh -o /usr/local/bin/mirza && chmod +x /usr/local/bin/mirza && mirza"
       exit 1
     fi
     ;;
