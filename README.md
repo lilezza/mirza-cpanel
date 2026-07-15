@@ -1,0 +1,187 @@
+# Mirza cPanel CLI
+
+Yek VPS + **yek** cPanel account → nasb / manage chandin bot Mirza (har bot = yek subdomain).
+
+Repo: https://github.com/lilezza/mirza-cpanel  
+Script: https://raw.githubusercontent.com/lilezza/mirza-cpanel/main/mirza-cpanel.sh
+
+---
+
+## 1) Pishniaz
+
+- VPS ba **WHM/cPanel** (root access)
+- PHP **8.2** (EasyApache / MultiPHP)
+- Domain rooye hamin cPanel account
+- Baraye **har bot** too Cloudflare:
+  - Record **A**: `bot1` → IP VPS
+  - Abr = **DNS only (khakestari)** — NA proxied (narenji)
+
+> Official `install.sh` Mirza rooye cPanel **nasan** — Apache/path joda dare. In CLI baraye cPanel-e.
+
+---
+
+## 2) Nasb CLI (yekbar)
+
+Ba root rooye server:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lilezza/mirza-cpanel/main/mirza-cpanel.sh -o /usr/local/bin/mirza
+chmod +x /usr/local/bin/mirza
+mirza
+```
+
+Ba’d prompt miad:
+
+```text
+mirza>
+```
+
+---
+
+## 3) Command ha
+
+| Command | Chi mikone |
+|---------|------------|
+| `help` | list command ha |
+| `steps` | rahnama-ye kootah |
+| `install` | nasb bot jadid (subdomain + DB + webhook + cron) |
+| `list` | list bot haye nasb shode |
+| `info` | joziyat yek bot (URL, DB, token, …) |
+| `update` | update code-e **yek** bot (config + DB mimunan) |
+| `update-all` | update **hame** bot ha |
+| `restore` | import file `.sql` (backup ghadimi) |
+| `backup` | export DB → `/root/DOMAIN-date.sql` |
+| `phpmyadmin` | link cPanel + info DB (+ one-time login age beshe) |
+| `set-token` | avaz token + set webhook |
+| `set-admin` | avaz admin chat ID |
+| `webhook` | set / check webhook |
+| `exit` | khoruj az CLI |
+
+---
+
+## 4) Nasb bot jadid
+
+```text
+mirza> install
+```
+
+Azat miporse:
+
+1. cPanel username (yekbar zakhire mishe)
+2. Root domain (mesl `mirza.shop`)
+3. Subdomain label (mesl `bot1` → `bot1.mirza.shop`)
+4. Token / username bot / admin ID
+
+Khodesh:
+
+- subdomain misaze
+- database + user (UAPI)
+- Mirza download mikone
+- `config.php` por mikone
+- AutoSSL, webhook, cron
+
+Bad az nasb:
+
+- Bot: `https://bot1.mirza.shop`
+- Admin: `https://bot1.mirza.shop/admin.php`
+- Secrets: `/root/.mirza-cpanel/credentials.txt`
+
+Telegram → `@bot` → `/start`
+
+---
+
+## 5) Restore backup (bot ghadimi → jadid)
+
+1. Aval bot jadid ro `install` kon (behtar ba **hamun token** ghadimi)
+2. File `.sql` ro upload kon rooye server
+3. Dakhel CLI:
+
+```text
+mirza> restore
+```
+
+Bot ro entekhab kon + path-e `.sql`
+
+4. **Dasti** too admin panel:
+   - domain / subscription link / panel URL → domain **jadid**
+   - age gateway dari, callback URL ham update kon
+5. `/start` bezan
+
+**Rahe digar:** `phpmyadmin` → login cPanel → phpMyAdmin → Import → `.sql`
+
+---
+
+## 6) Update (vaghti Mirza version mide)
+
+```text
+mirza> update          # yek bot
+mirza> update-all      # hame
+```
+
+Chi **mimumune**: `config.php` + data-e database  
+Chi **taze mishe**: code az GitHub + `table.php` (schema)
+
+Pishnahad ghabl az update:
+
+```text
+mirza> backup
+```
+
+> Official `mirza update` / `install.sh` rooye cPanel use **nakon**.
+
+---
+
+## 7) Avaz token / admin
+
+```text
+mirza> set-token
+mirza> set-admin
+```
+
+`set-token` automatic webhook ro ham set mikone.
+
+---
+
+## 8) phpMyAdmin
+
+```text
+mirza> phpmyadmin
+```
+
+Neshoon mide:
+
+- link cPanel (`:2083`)
+- DB name / user / password
+- age beshe, one-time login link
+
+Az cPanel → **Databases → phpMyAdmin**.
+
+---
+
+## 9) File ha / meta
+
+| Path | Chiye |
+|------|--------|
+| `/usr/local/bin/mirza` | khode CLI |
+| `/root/.mirza-cpanel/account.conf` | cPanel user + root domain |
+| `/root/.mirza-cpanel/bots/*.env` | meta har bot |
+| `/root/.mirza-cpanel/credentials.txt` | password/token ha |
+
+---
+
+## 10) Troubleshooting kootah
+
+| Moshkel | Check |
+|---------|--------|
+| SSL / AutoSSL fail | Cloudflare grey-cloud? DNS A dorost? |
+| Webhook fail | SSL amade? `mirza> webhook` |
+| Jadval nist | `https://DOMAIN/table.php` ya `info` |
+| Bot javab nemide | token, webhook, `/start` |
+| Cron kar nemikone | `crontab -u CPUSER -l` |
+
+---
+
+## License / note
+
+In wrapper baraye nasb rooye **cPanel** neveshte shode.  
+Kode asli bot: [mahdiMGF2/mirzabot](https://github.com/mahdiMGF2/mirzabot)
