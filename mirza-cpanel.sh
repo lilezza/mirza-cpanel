@@ -13,7 +13,7 @@
 ###############################################################################
 set -u
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 PHP_EA="ea-php82"
 REPO_TAR="https://github.com/mahdiMGF2/mirzabot/archive/refs/heads/main.tar.gz"
 META_ROOT="/root/.mirza-cpanel"
@@ -273,31 +273,75 @@ cfg_set_php_var(){
   fi
 }
 
-create_subdomain(){
-  DOCROOT="/home/${CPUSER}/${DOMAIN}"
-  info "Subdomain ${DOMAIN} → ${DOCROOT}"
-  if [ -d "$DOCROOT" ] && uapi --user="$CPUSER" SubDomain listsubdomains 2>/dev/null | grep -qi "${DOMAIN}"; then
-    warn "Subdomain ghablan hast — edame."
-    return 0
+# cPanel often maps subdomain dir under public_html even if UAPI gets a relative path.
+resolve_docroot(){
+  local ud="/var/cpanel/userdata/${CPUSER}/${DOMAIN}"
+  local from_ud=""
+  if [ -f "$ud" ]; then
+    from_ud="$(awk -F': ' '/^documentroot:/{print $2; exit}' "$ud" 2>/dev/null || true)"
   fi
+  if [ -n "$from_ud" ]; then
+    DOCROOT="$from_ud"
+  elif [ -d "/home/${CPUSER}/public_html/${DOMAIN}" ]; then
+    DOCROOT="/home/${CPUSER}/public_html/${DOMAIN}"
+  else
+    DOCROOT="/home/${CPUSER}/public_html/${DOMAIN}"
+  fi
+}
+
+create_subdomain(){
+  # Prefer public_html path (matches modern cPanel userdata documentroot).
+  local REL_DIR="public_html/${DOMAIN}"
+  DOCROOT="/home/${CPUSER}/${REL_DIR}"
+  info "Subdomain ${DOMAIN} → ${DOCROOT}"
+
   local OUT
   OUT=$(uapi --user="$CPUSER" SubDomain addsubdomain \
-    domain="$SUB" rootdomain="$ROOT_DOMAIN" dir="${DOMAIN}" 2>&1) || true
+    domain="$SUB" rootdomain="$ROOT_DOMAIN" dir="${REL_DIR}" 2>&1) || true
+
   if echo "$OUT" | grep -Eq 'status:\s*1|"status":1'; then
     ok "Subdomain sakhte shod."
-  elif [ -d "$DOCROOT" ]; then
-    warn "uapi warning — folder hast, edame."
+  elif echo "$OUT" | grep -qiE 'already exists|exists'; then
+    warn "Subdomain ghablan hast — edame."
   else
-    echo "$OUT"
-    bad "Subdomain fail. Root domain male in account bashe."
-    return 1
+    # Fallback: legacy dir without public_html prefix (older cPanel)
+    OUT=$(uapi --user="$CPUSER" SubDomain addsubdomain \
+      domain="$SUB" rootdomain="$ROOT_DOMAIN" dir="${DOMAIN}" 2>&1) || true
+    if echo "$OUT" | grep -Eq 'status:\s*1|"status":1'; then
+      ok "Subdomain sakhte shod (legacy dir)."
+    elif [ -d "$DOCROOT" ] || [ -d "/home/${CPUSER}/${DOMAIN}" ]; then
+      warn "uapi warning — folder/subdomain hast, edame."
+    else
+      echo "$OUT"
+      bad "Subdomain fail. Root domain male in account bashe."
+      return 1
+    fi
   fi
+
+  resolve_docroot
   mkdir -p "$DOCROOT"
   chown "${CPUSER}:${CPUSER}" "$DOCROOT"
+  ok "Docroot: $DOCROOT"
+}
+
+mysql_uapi_ok(){
+  echo "$1" | grep -Eq 'status:\s*1|"status":1'
+}
+
+grant_db_fallback(){
+  # When UAPI set_privileges fails, grant as root MySQL.
+  mysql -e "CREATE DATABASE IF NOT EXISTS \`${DBNAME}\`;" >/dev/null 2>&1 || true
+  mysql -e "CREATE USER IF NOT EXISTS '${DBUSER}'@'localhost' IDENTIFIED BY '${DBPASS}';" >/dev/null 2>&1 || true
+  mysql -e "ALTER USER '${DBUSER}'@'localhost' IDENTIFIED BY '${DBPASS}';" >/dev/null 2>&1 || true
+  mysql -e "GRANT ALL PRIVILEGES ON \`${DBNAME}\`.* TO '${DBUSER}'@'localhost'; FLUSH PRIVILEGES;" >/dev/null 2>&1 || true
+}
+
+verify_db_login(){
+  mysql -u "$DBUSER" -p"$DBPASS" "$DBNAME" -e "SELECT 1;" >/dev/null 2>&1
 }
 
 create_database(){
-  local raw tag db_short user_short OUT
+  local raw tag db_short user_short OUT db_try user_try
   raw="$(sanitize "$SUB")"
   tag="$(echo "$raw" | cut -c1-8)"
   [ -n "$tag" ] || tag="b$(date +%s | tail -c 4)"
@@ -305,18 +349,73 @@ create_database(){
   user_short="$(echo "u${tag}" | cut -c1-7)"
   DBPASS="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | cut -c1-18)"
 
-  info "Database (UAPI)..."
-  uapi --user="$CPUSER" Mysql create_database name="$db_short" >/dev/null 2>&1 || true
-  OUT=$(uapi --user="$CPUSER" Mysql create_user name="$user_short" password="$DBPASS" 2>&1) || true
-  if ! echo "$OUT" | grep -Eq 'status:\s*1|"status":1'; then
-    uapi --user="$CPUSER" Mysql set_password user="$user_short" password="$DBPASS" >/dev/null 2>&1 || true
-  fi
-  uapi --user="$CPUSER" Mysql set_privileges_on_database \
-    user="$user_short" database="$db_short" privileges=ALLPRIVILEGES >/dev/null 2>&1 || true
-
+  # Modern cPanel UAPI wants prefixed names (user_db). Older accepted short names.
   DBNAME="${CPUSER}_${db_short}"
   DBUSER="${CPUSER}_${user_short}"
-  ok "DB $DBNAME / $DBUSER"
+
+  info "Database (UAPI)..."
+
+  OUT=$(uapi --user="$CPUSER" Mysql create_database name="$DBNAME" 2>&1) || true
+  if ! mysql_uapi_ok "$OUT"; then
+    OUT=$(uapi --user="$CPUSER" Mysql create_database name="$db_short" 2>&1) || true
+    if ! mysql_uapi_ok "$OUT"; then
+      # last resort: create as root
+      mysql -e "CREATE DATABASE IF NOT EXISTS \`${DBNAME}\`;" >/dev/null 2>&1 || true
+      warn "create_database UAPI fail — mysql root fallback."
+    fi
+  fi
+
+  OUT=$(uapi --user="$CPUSER" Mysql create_user name="$DBUSER" password="$DBPASS" 2>&1) || true
+  if ! mysql_uapi_ok "$OUT"; then
+    OUT=$(uapi --user="$CPUSER" Mysql create_user name="$user_short" password="$DBPASS" 2>&1) || true
+    if ! mysql_uapi_ok "$OUT"; then
+      uapi --user="$CPUSER" Mysql set_password user="$DBUSER" password="$DBPASS" >/dev/null 2>&1 || true
+      uapi --user="$CPUSER" Mysql set_password user="$user_short" password="$DBPASS" >/dev/null 2>&1 || true
+      grant_db_fallback
+    else
+      uapi --user="$CPUSER" Mysql set_password user="$user_short" password="$DBPASS" >/dev/null 2>&1 || true
+    fi
+  else
+    uapi --user="$CPUSER" Mysql set_password user="$DBUSER" password="$DBPASS" >/dev/null 2>&1 || true
+  fi
+
+  OUT=$(uapi --user="$CPUSER" Mysql set_privileges_on_database \
+    user="$DBUSER" database="$DBNAME" privileges=ALLPRIVILEGES 2>&1) || true
+  if ! mysql_uapi_ok "$OUT"; then
+    OUT=$(uapi --user="$CPUSER" Mysql set_privileges_on_database \
+      user="$user_short" database="$db_short" privileges=ALLPRIVILEGES 2>&1) || true
+  fi
+  if ! mysql_uapi_ok "$OUT"; then
+    warn "UAPI privilege fail — mysql GRANT fallback."
+    grant_db_fallback
+  fi
+
+  # Always ensure grants work (covers partial UAPI success)
+  grant_db_fallback
+
+  if verify_db_login; then
+    ok "DB $DBNAME / $DBUSER"
+  else
+    bad "DB login fail: $DBUSER @ $DBNAME"
+    bad "Check: mysql -u $DBUSER -p'$DBPASS' $DBNAME -e 'SELECT 1;'"
+    return 1
+  fi
+}
+
+verify_web_index(){
+  local code
+  code=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 15 "https://${DOMAIN}/index.php" 2>/dev/null || echo "000")
+  if [ "$code" = "200" ] || [ "$code" = "301" ] || [ "$code" = "302" ]; then
+    ok "HTTPS index.php → $code"
+    return 0
+  fi
+  code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "http://${DOMAIN}/index.php" 2>/dev/null || echo "000")
+  if [ "$code" = "200" ] || [ "$code" = "301" ] || [ "$code" = "302" ]; then
+    ok "HTTP index.php → $code"
+    return 0
+  fi
+  warn "index.php HTTP $code — docroot / DNS / SSL check. Expected files in: $DOCROOT"
+  return 1
 }
 
 update_one_bot(){
@@ -379,12 +478,14 @@ do_install(){
   create_subdomain || return 1
   create_database || return 1
   set_php
+  resolve_docroot
   find "$DOCROOT" -mindepth 1 -maxdepth 1 ! -name '.well-known' -exec rm -rf {} + 2>/dev/null || true
   download_mirza_to "$DOCROOT" || return 1
   write_config || return 1
   fix_dirs
   run_table_php
   wait_ssl
+  verify_web_index || warn "Webhook shayad 404 bede — docroot/DNS check."
   set_webhook
   install_crons
   save_bot_meta
@@ -392,6 +493,7 @@ do_install(){
   echo -e "\n${C_OK}======== DONE ========${CR}"
   echo -e "  Bot    : https://${DOMAIN}"
   echo -e "  Admin  : https://${DOMAIN}/admin.php"
+  echo -e "  Docroot: ${DOCROOT}"
   echo -e "  DB     : ${DBNAME} / ${DBUSER}"
   echo -e "  Pass   : ${DBPASS}"
   echo -e "  Secrets: ${CREDS_FILE}"

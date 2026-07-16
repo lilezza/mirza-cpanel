@@ -174,10 +174,21 @@ Az cPanel → **Databases → phpMyAdmin**.
 | Moshkel | Check |
 |---------|--------|
 | SSL / AutoSSL fail | Cloudflare grey-cloud? DNS A dorost? |
+| Webhook `404` | Docroot bayad `public_html/...` bashe (v1.2+). `curl -I https://DOMAIN/index.php` |
+| DB access denied | Script ba prefix `user_db` + mysql GRANT fallback (v1.2+) |
 | Webhook fail | SSL amade? `mirza> webhook` |
 | Jadval nist | `https://DOMAIN/table.php` ya `info` |
 | Bot javab nemide | token, webhook, `/start` |
 | Cron kar nemikone | `crontab -u CPUSER -l` |
+
+### Update CLI rooye server (bad az push)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lilezza/mirza-cpanel/main/mirza-cpanel.sh -o /usr/local/bin/mirza
+chmod +x /usr/local/bin/mirza
+mirza
+# bayad v1.2.0 neshun bede
+```
 
 ---
 
@@ -185,3 +196,12 @@ Az cPanel → **Databases → phpMyAdmin**.
 
 In wrapper baraye nasb rooye **cPanel** neveshte shode.  
 Kode asli bot: [mahdiMGF2/mirzabot](https://github.com/mahdiMGF2/mirzabot)
+
+### Changelog
+
+**v1.2.0**
+- Fix docroot: file-ha miran to `/home/USER/public_html/SUB.DOMAIN` (digar 404 webhook)
+- Fix MySQL: UAPI ba esm prefix-dar (`user_dbname`) + fallback `GRANT` ba root
+- Install fail mishe age DB login kar nakone
+- Check `index.php` HTTP status bad az nasb
+- Resolve docroot az cPanel userdata
