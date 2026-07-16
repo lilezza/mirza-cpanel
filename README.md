@@ -200,6 +200,10 @@ Kode asli bot: [mahdiMGF2/mirzabot](https://github.com/mahdiMGF2/mirzabot)
 
 ### Changelog
 
+**v1.3.1**
+- Patch Mirza Rebecca: vorud panel digar 500 nemide (invoice SQL ba `Service_location`)
+- `password_panel` → `TEXT` (API key / JWT toolani)
+
 **v1.3.0**
 - Add `uninstall` — hazf kamel bot (webhook, cron, files, DB, subdomain, meta)
 

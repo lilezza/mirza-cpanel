@@ -13,7 +13,7 @@
 ###############################################################################
 set -u
 
-VERSION="1.3.0"
+VERSION="1.3.1"
 PHP_EA="ea-php82"
 REPO_TAR="https://github.com/mahdiMGF2/mirzabot/archive/refs/heads/main.tar.gz"
 META_ROOT="/root/.mirza-cpanel"
@@ -418,6 +418,76 @@ verify_web_index(){
   return 1
 }
 
+# Upstream Mirza 0.2.5: Rebecca panel select crashes (500) because invoice
+# query uses code_panel/is_test columns that do not exist. Use Service_location
+# like other panel types. Also widen password_panel for API keys / JWT.
+patch_mirza_known_bugs(){
+  local admin="$DOCROOT/admin.php"
+  [ -f "$admin" ] || return 0
+
+  if grep -q 'code_panel = :code_panel AND is_test = 0' "$admin" 2>/dev/null; then
+    info "Patch Rebecca invoice SQL (admin.php)..."
+    if ! command -v python3 >/dev/null 2>&1; then
+      warn "python3 nist — Rebecca patch skip. Dasti fix kon."
+    else
+      python3 - "$admin" <<'PY'
+import sys
+from pathlib import Path
+p = Path(sys.argv[1])
+t = p.read_text(encoding="utf-8")
+old = """    } elseif ($marzban_list_get['type'] == \"rebecca\") {
+        $Check_connection = Get_System_Stats_rebecca($marzban_list_get['name_panel']);
+        if (empty($Check_connection['error']) && (empty($Check_connection['status']) || $Check_connection['status'] < 400)) {
+            $ListSell = $pdo->prepare(\"SELECT COUNT(*) FROM invoice WHERE (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR Status = 'send_on_hold') AND code_panel = :code_panel AND is_test = 0 AND bottype IS NULL\");
+            $ListSell->bindParam(':code_panel', $marzban_list_get['code_panel']);
+            $ListSell->execute();
+            $ListSell = $ListSell->fetch(PDO::FETCH_ASSOC)['COUNT(*)'];
+            $ListSellSum = $pdo->prepare(\"SELECT SUM(price_product) FROM invoice WHERE (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR Status = 'send_on_hold') AND code_panel = :code_panel AND is_test = 0 AND bottype IS NULL\");
+            $ListSellSum->bindParam(':code_panel', $marzban_list_get['code_panel']);
+            $ListSellSum->execute();
+            $ListSellSUM = number_format($ListSellSum->fetch(PDO::FETCH_ASSOC)['SUM(price_product)'], 0);
+            $text_marzban = sprintf($textbotlang['Admin']['adminphp']['ok_select_panel_user_4'], $ListSell, $ListSellSUM, $marzban_list_get['agent']);
+            sendmessage($from_id, $text_marzban, $optionrebecca, 'HTML');"""
+new = """    } elseif ($marzban_list_get['type'] == \"rebecca\") {
+        $Check_connection = Get_System_Stats_rebecca($marzban_list_get['name_panel']);
+        if (empty($Check_connection['error']) && (empty($Check_connection['status']) || $Check_connection['status'] < 400)) {
+            $__q_r1 = $pdo->prepare(\"SELECT COUNT(*) FROM invoice WHERE (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR Status = 'send_on_hold') AND Service_location = ? AND name_product != ?\");
+            $__q_r1->bindValue(1, $marzban_list_get['name_panel'], PDO::PARAM_STR);
+            $__q_r1->bindValue(2, $textbotlang['Admin']['adminphp']['db_test_service_name'], PDO::PARAM_STR);
+            $__q_r1->execute();
+            $ListSell = number_format($__q_r1->fetch(PDO::FETCH_ASSOC)['COUNT(*)'] ?? 0);
+            $__q_r2 = $pdo->prepare(\"SELECT SUM(price_product) FROM invoice WHERE (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR Status = 'send_on_hold') AND Service_location = ? AND name_product != ?\");
+            $__q_r2->bindValue(1, $marzban_list_get['name_panel'], PDO::PARAM_STR);
+            $__q_r2->bindValue(2, $textbotlang['Admin']['adminphp']['db_test_service_name'], PDO::PARAM_STR);
+            $__q_r2->execute();
+            $ListSellSUM = number_format($__q_r2->fetch(PDO::FETCH_ASSOC)['SUM(price_product)'] ?? 0);
+            $text_marzban = sprintf($textbotlang['Admin']['adminphp']['ok_select_panel_user_4'], $ListSell, $ListSellSUM, $marzban_list_get['agent']);
+            sendmessage($from_id, $text_marzban, $optionrebecca, 'HTML');"""
+if old not in t:
+    print("SKIP: rebecca block pattern not found", file=sys.stderr)
+    sys.exit(0)
+p.write_text(t.replace(old, new, 1), encoding="utf-8")
+print("OK")
+PY
+      if [ $? -eq 0 ]; then
+        ok "Rebecca admin.php patched."
+      else
+        warn "Rebecca patch fail — dasti check kon."
+      fi
+    fi
+  else
+    info "Rebecca invoice SQL already OK (ya pattern nist)."
+  fi
+
+  # API keys / JWT often exceed varchar(200)
+  if [ -n "${DBNAME:-}" ] && [ -n "${DBUSER:-}" ] && [ -n "${DBPASS:-}" ]; then
+    mysql -u "$DBUSER" -p"$DBPASS" "$DBNAME" -e \
+      "ALTER TABLE marzban_panel MODIFY password_panel TEXT;" >/dev/null 2>&1 \
+      && ok "password_panel → TEXT" \
+      || true
+  fi
+}
+
 update_one_bot(){
   [ -d "$DOCROOT" ] || { bad "Docroot nist: $DOCROOT"; return 1; }
   [ -f "$DOCROOT/config.php" ] || { bad "config.php nist"; return 1; }
@@ -434,6 +504,7 @@ update_one_bot(){
   cp -a "$CFG_BAK" "$DOCROOT/config.php"
   [ -d "$WELL_BAK" ] && cp -a "$WELL_BAK" "$DOCROOT/.well-known"
   fix_dirs
+  patch_mirza_known_bugs
   run_table_php
   install_crons
   rm -rf "$TMP"
@@ -483,6 +554,7 @@ do_install(){
   download_mirza_to "$DOCROOT" || return 1
   write_config || return 1
   fix_dirs
+  patch_mirza_known_bugs
   run_table_php
   wait_ssl
   verify_web_index || warn "Webhook shayad 404 bede — docroot/DNS check."
