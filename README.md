@@ -45,6 +45,7 @@ mirza>
 | `help` | list command ha |
 | `steps` | rahnama-ye kootah |
 | `install` | nasb bot jadid (subdomain + DB + webhook + cron) |
+| `uninstall` | hazf kamel bot (files + DB + cron + webhook + subdomain) |
 | `list` | list bot haye nasb shode |
 | `info` | joziyat yek bot (URL, DB, token, …) |
 | `update` | update code-e **yek** bot (config + DB mimunan) |
@@ -198,6 +199,9 @@ In wrapper baraye nasb rooye **cPanel** neveshte shode.
 Kode asli bot: [mahdiMGF2/mirzabot](https://github.com/mahdiMGF2/mirzabot)
 
 ### Changelog
+
+**v1.3.0**
+- Add `uninstall` — hazf kamel bot (webhook, cron, files, DB, subdomain, meta)
 
 **v1.2.0**
 - Fix docroot: file-ha miran to `/home/USER/public_html/SUB.DOMAIN` (digar 404 webhook)

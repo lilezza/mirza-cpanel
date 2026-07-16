@@ -13,7 +13,7 @@
 ###############################################################################
 set -u
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 PHP_EA="ea-php82"
 REPO_TAR="https://github.com/mahdiMGF2/mirzabot/archive/refs/heads/main.tar.gz"
 META_ROOT="/root/.mirza-cpanel"
@@ -684,6 +684,136 @@ do_backup_db(){
   fi
 }
 
+remove_bot_crons(){
+  local CRON_TMP
+  CRON_TMP="$(mktemp)"
+  crontab -u "$CPUSER" -l 2>/dev/null | grep -v "https://${DOMAIN}/cronbot/" > "$CRON_TMP" || true
+  if [ -s "$CRON_TMP" ]; then
+    crontab -u "$CPUSER" "$CRON_TMP" && ok "Cron lines remove shod." || warn "Cron update fail."
+  else
+    crontab -u "$CPUSER" -r 2>/dev/null || true
+    ok "Cron khali / remove shod."
+  fi
+  rm -f "$CRON_TMP"
+}
+
+delete_webhook(){
+  [ -n "${BOT_TOKEN:-}" ] || return 0
+  info "Webhook delete..."
+  local WH
+  WH=$(curl -s "https://api.telegram.org/bot${BOT_TOKEN}/deleteWebhook?drop_pending_updates=true")
+  if echo "$WH" | grep -q '"ok":true'; then
+    ok "Webhook hazf shod."
+  else
+    warn "Webhook: $WH"
+  fi
+}
+
+drop_bot_database(){
+  local short_db short_user OUT
+  [ -n "${DBNAME:-}" ] || return 0
+  info "Drop DB ${DBNAME} / ${DBUSER}..."
+
+  short_db="${DBNAME#${CPUSER}_}"
+  short_user="${DBUSER#${CPUSER}_}"
+
+  OUT=$(uapi --user="$CPUSER" Mysql delete_database name="$DBNAME" 2>&1) || true
+  if ! echo "$OUT" | grep -Eq 'status:\s*1|"status":1'; then
+    uapi --user="$CPUSER" Mysql delete_database name="$short_db" >/dev/null 2>&1 || true
+    mysql -e "DROP DATABASE IF EXISTS \`${DBNAME}\`;" >/dev/null 2>&1 || true
+  fi
+
+  if [ -n "${DBUSER:-}" ]; then
+    OUT=$(uapi --user="$CPUSER" Mysql delete_user name="$DBUSER" 2>&1) || true
+    if ! echo "$OUT" | grep -Eq 'status:\s*1|"status":1'; then
+      uapi --user="$CPUSER" Mysql delete_user name="$short_user" >/dev/null 2>&1 || true
+      mysql -e "DROP USER IF EXISTS '${DBUSER}'@'localhost';" >/dev/null 2>&1 || true
+      mysql -e "DROP USER IF EXISTS '${DBUSER}'@'%';" >/dev/null 2>&1 || true
+      mysql -e "FLUSH PRIVILEGES;" >/dev/null 2>&1 || true
+    fi
+  fi
+  ok "Database remove shod (ya try shod)."
+}
+
+delete_bot_subdomain(){
+  local OUT sub_label
+  info "Subdomain delete..."
+  # Full FQDN usually works on modern cPanel
+  OUT=$(uapi --user="$CPUSER" SubDomain delsubdomain domain="$DOMAIN" 2>&1) || true
+  if echo "$OUT" | grep -Eq 'status:\s*1|"status":1'; then
+    ok "Subdomain hazf shod."
+    return 0
+  fi
+  sub_label="${SUB:-${DOMAIN%%.*}}"
+  OUT=$(uapi --user="$CPUSER" SubDomain delsubdomain domain="$sub_label" 2>&1) || true
+  if echo "$OUT" | grep -Eq 'status:\s*1|"status":1'; then
+    ok "Subdomain hazf shod."
+  else
+    warn "Subdomain UAPI fail — dasti az cPanel → Domains hazf kon."
+    echo "$OUT" | head -20
+  fi
+}
+
+do_uninstall(){
+  need_root || return 1; need_tools || return 1
+  echo -e "\n${C_BOLD}==== Uninstall Mirza bot ====${CR}"
+  warn "In kar: webhook, cron, files, DB, subdomain, meta ro hazf mikone."
+  pick_bot || return 1
+  load_account
+
+  echo
+  echo -e "  Domain  : ${C_BOLD}${DOMAIN}${CR}"
+  echo -e "  Docroot : ${DOCROOT}"
+  echo -e "  DB      : ${DBNAME} / ${DBUSER}"
+  echo -e "  Bot     : @${BOT_USERNAME}"
+  echo
+  read -rp "  Backup DB ghabl az hazf? (y/n) [y]: " do_bak
+  do_bak="${do_bak:-y}"
+  if [ "$do_bak" = "y" ] || [ "$do_bak" = "Y" ]; then
+    local out
+    out="/root/${DOMAIN}-before-uninstall-$(date +%Y%m%d-%H%M%S).sql"
+    if mysqldump "$DBNAME" > "$out" 2>/dev/null; then
+      ok "Backup: $out"
+    else
+      warn "Backup fail (DB shayad nist) — edame."
+    fi
+  fi
+
+  echo
+  warn "Hazf PAYANI. Barghasht nadare (be joz backup)."
+  read -rp "  Type exact domain to confirm (${DOMAIN}): " confirm
+  [ "$confirm" = "$DOMAIN" ] || { bad "Confirm eshtebah — cancel."; return 1; }
+
+  delete_webhook
+  remove_bot_crons
+  drop_bot_database
+
+  info "Files..."
+  if [ -n "${DOCROOT:-}" ] && [ -d "$DOCROOT" ]; then
+    rm -rf "$DOCROOT"
+    ok "Removed: $DOCROOT"
+  fi
+  # legacy path (v1.1 bug)
+  if [ -d "/home/${CPUSER}/${DOMAIN}" ]; then
+    rm -rf "/home/${CPUSER}/${DOMAIN}"
+    ok "Removed legacy: /home/${CPUSER}/${DOMAIN}"
+  fi
+
+  delete_bot_subdomain
+
+  local meta
+  meta="$(bot_meta_path "$DOMAIN")"
+  if [ -f "$meta" ]; then
+    rm -f "$meta"
+    ok "Meta remove: $meta"
+  fi
+
+  echo
+  ok "Uninstall DONE: ${DOMAIN}"
+  warn "Cloudflare A record (${SUB:-bot}) ro dasti hazf kon age digar lazem nist."
+  echo
+}
+
 do_self_install(){
   need_root || return 1
   local src
@@ -701,6 +831,7 @@ cat <<EOF
 
   Commands:
     ${C_OK}install${CR}       Nasb bot jadid (subdomain)
+    ${C_OK}uninstall${CR}     Hazf kamel yek bot
     ${C_OK}list${CR}          List bot ha
     ${C_OK}info${CR}          Joziyat yek bot
     ${C_OK}update${CR}        Update code-e yek bot
@@ -734,6 +865,7 @@ cat <<'TXT'
 
   3) Dakhel CLI:
        mirza> install
+       mirza> uninstall
        mirza> list
        mirza> phpmyadmin
        mirza> restore
@@ -757,6 +889,7 @@ run_cmd(){
   local c="${1:-}"
   case "$c" in
     install)     do_install ;;
+    uninstall|remove|delete) do_uninstall ;;
     list|ls)     do_list ;;
     info|show)   do_info ;;
     update)      do_update ;;
@@ -780,7 +913,7 @@ repl(){
   need_root || exit 1
   ensure_meta
   echo -e "\n${C_INFO}${C_BOLD}  Mirza cPanel CLI${CR}  v${VERSION}"
-  echo -e "  ${C_DIM}help | install | update | restore | phpmyadmin | set-token | set-admin | exit${CR}\n"
+  echo -e "  ${C_DIM}help | install | uninstall | update | restore | phpmyadmin | set-token | set-admin | exit${CR}\n"
   local line
   while true; do
     # readline if available
