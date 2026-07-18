@@ -13,7 +13,7 @@
 ###############################################################################
 set -u
 
-VERSION="1.3.1"
+VERSION="1.3.2"
 PHP_EA="ea-php82"
 REPO_TAR="https://github.com/mahdiMGF2/mirzabot/archive/refs/heads/main.tar.gz"
 META_ROOT="/root/.mirza-cpanel"
@@ -647,6 +647,15 @@ do_phpmyadmin(){
   fi
 }
 
+# MySQL 8 dumps use utf8mb4_0900_* which MariaDB (cPanel) rejects (#1273).
+sanitize_sql_for_mariadb(){
+  # stdin → stdout
+  sed -e 's/utf8mb4_0900_ai_ci/utf8mb4_unicode_ci/g' \
+      -e 's/utf8mb4_0900_as_ci/utf8mb4_unicode_ci/g' \
+      -e 's/utf8mb4_0900_as_cs/utf8mb4_bin/g' \
+      -e 's/utf8_0900_ai_ci/utf8_unicode_ci/g'
+}
+
 do_restore(){
   need_root || return 1; need_tools || return 1
   echo -e "\n${C_BOLD}==== Restore backup SQL ====${CR}"
@@ -660,13 +669,28 @@ do_restore(){
   read -rp "  Edame? (y/n): " yn
   [ "$yn" = "y" ] || return 1
 
+  local TMP_SQL
+  TMP_SQL="$(mktemp)"
+  info "Sanitize collation (MySQL8 → MariaDB)..."
+  if sanitize_sql_for_mariadb < "$SQLFILE" > "$TMP_SQL"; then
+    if grep -q 'utf8mb4_0900\|utf8_0900' "$SQLFILE" 2>/dev/null; then
+      ok "Collation MySQL8 → utf8mb4_unicode_ci."
+    fi
+  else
+    bad "Sanitize fail."
+    rm -f "$TMP_SQL"
+    return 1
+  fi
+
   mysql "$DBNAME" -e "SET FOREIGN_KEY_CHECKS=0;" >/dev/null 2>&1 || true
-  if mysql "$DBNAME" < "$SQLFILE"; then
+  if mysql "$DBNAME" < "$TMP_SQL"; then
     ok "Import OK."
   else
     bad "Import fail."
+    rm -f "$TMP_SQL"
     return 1
   fi
+  rm -f "$TMP_SQL"
   mysql "$DBNAME" -e "SET FOREIGN_KEY_CHECKS=1;" >/dev/null 2>&1 || true
 
   set_webhook

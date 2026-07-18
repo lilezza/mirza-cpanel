@@ -200,6 +200,9 @@ Kode asli bot: [mahdiMGF2/mirzabot](https://github.com/mahdiMGF2/mirzabot)
 
 ### Changelog
 
+**v1.3.2**
+- `restore`: auto-fix collation MySQL 8 (`utf8mb4_0900_ai_ci`) → MariaDB (`utf8mb4_unicode_ci`) — error `#1273`
+
 **v1.3.1**
 - Patch Mirza Rebecca: vorud panel digar 500 nemide (invoice SQL ba `Service_location`)
 - `password_panel` → `TEXT` (API key / JWT toolani)
