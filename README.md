@@ -50,12 +50,14 @@ mirza>
 | `info` | joziyat yek bot (URL, DB, token, …) |
 | `update` | update code-e **yek** bot (config + DB mimunan) |
 | `update-all` | update **hame** bot ha |
+| `self-update` | update **khode** CLI mirza az GitHub (bedoon curl dasti) |
 | `restore` | import file `.sql` (backup ghadimi) |
 | `backup` | export DB → `/root/DOMAIN-date.sql` |
 | `phpmyadmin` | link cPanel + info DB (+ one-time login age beshe) |
 | `set-token` | avaz token + set webhook |
 | `set-admin` | avaz admin chat ID |
 | `webhook` | set / check webhook |
+| `setup-cli` | nasb `mirza` too `/usr/local/bin` |
 | `exit` | khoruj az CLI |
 
 ---
@@ -199,6 +201,9 @@ In wrapper baraye nasb rooye **cPanel** neveshte shode.
 Kode asli bot: [mahdiMGF2/mirzabot](https://github.com/mahdiMGF2/mirzabot)
 
 ### Changelog
+
+**v1.3.5**
+- `self-update` / `update-cli` — update khode CLI az GitHub (bedoon curl dasti)
 
 **v1.3.4**
 - Backup cron: run `backupbot.php` via `ea-php82` CLI (cPanel web PHP has `exec` disabled → HTTP curl backup always failed)

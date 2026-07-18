@@ -13,9 +13,10 @@
 ###############################################################################
 set -u
 
-VERSION="1.3.4"
+VERSION="1.3.5"
 PHP_EA="ea-php82"
 REPO_TAR="https://github.com/mahdiMGF2/mirzabot/archive/refs/heads/main.tar.gz"
+REPO_CLI="https://raw.githubusercontent.com/lilezza/mirza-cpanel/main/mirza-cpanel.sh"
 META_ROOT="/root/.mirza-cpanel"
 CONF_FILE="${META_ROOT}/account.conf"
 BOTS_DIR="${META_ROOT}/bots"
@@ -941,6 +942,48 @@ do_self_install(){
   info "Az alan:  mirza"
 }
 
+do_self_update(){
+  need_root || return 1
+  command -v curl >/dev/null 2>&1 || { bad "curl nist."; return 1; }
+  echo -e "\n${C_BOLD}==== Update Mirza CLI ====${CR}"
+  info "Alan: v${VERSION}"
+  info "Download az GitHub..."
+
+  local TMP NEW_VER
+  TMP="$(mktemp)"
+  if ! curl -fsSL "$REPO_CLI" -o "$TMP"; then
+    rm -f "$TMP"
+    bad "Download fail: $REPO_CLI"
+    return 1
+  fi
+  if ! bash -n "$TMP" 2>/dev/null; then
+    rm -f "$TMP"
+    bad "File jadid syntax error — update cancel."
+    return 1
+  fi
+
+  NEW_VER="$(grep -E '^VERSION=' "$TMP" | head -1 | cut -d'"' -f2)"
+  [ -n "$NEW_VER" ] || NEW_VER="?"
+
+  if [ "$NEW_VER" = "$VERSION" ]; then
+    ok "Ghablan akharin version-i: v${VERSION}"
+    rm -f "$TMP"
+    return 0
+  fi
+
+  info "Jadid: v${NEW_VER}  (ghabli: v${VERSION})"
+  read -rp "  Update konam? (y/n): " yn
+  [ "$yn" = "y" ] || [ "$yn" = "Y" ] || { rm -f "$TMP"; info "Cancel."; return 0; }
+
+  cp -f "$TMP" "$BIN_PATH"
+  chmod +x "$BIN_PATH"
+  rm -f "$TMP"
+  ok "CLI update shod → v${NEW_VER}"
+  echo -e "  Path: ${BIN_PATH}"
+  echo -e "  ${C_DIM}Baraye version jadid: exit  →  mirza${CR}"
+  echo
+}
+
 show_help(){
 cat <<EOF
 
@@ -953,6 +996,7 @@ cat <<EOF
     ${C_OK}info${CR}          Joziyat yek bot
     ${C_OK}update${CR}        Update code-e yek bot
     ${C_OK}update-all${CR}    Update hame bot ha
+    ${C_OK}self-update${CR}   Update khode CLI mirza (az GitHub)
     ${C_OK}restore${CR}       Import backup .sql
     ${C_OK}backup${CR}        Export DB → /root/*.sql
     ${C_OK}phpmyadmin${CR}    Link cPanel + DB info
@@ -990,6 +1034,7 @@ cat <<'TXT'
        mirza> set-admin
        mirza> update
        mirza> update-all
+       mirza> self-update
 
   4) Restore backup:
        - aval install ba hamun token
@@ -1018,6 +1063,7 @@ run_cmd(){
     set-admin|admin)   do_set_admin ;;
     webhook)     do_webhook ;;
     setup-cli|self-install) do_self_install ;;
+    self-update|update-cli|upgrade-cli) do_self_update ;;
     steps|guide) show_steps ;;
     help|h|\?)   show_help ;;
     exit|quit|q) echo "  bye."; exit 0 ;;
@@ -1030,7 +1076,7 @@ repl(){
   need_root || exit 1
   ensure_meta
   echo -e "\n${C_INFO}${C_BOLD}  Mirza cPanel CLI${CR}  v${VERSION}"
-  echo -e "  ${C_DIM}help | install | uninstall | update | restore | phpmyadmin | set-token | set-admin | exit${CR}\n"
+  echo -e "  ${C_DIM}help | install | uninstall | update | self-update | restore | phpmyadmin | set-token | set-admin | exit${CR}\n"
   local line
   while true; do
     # readline if available
