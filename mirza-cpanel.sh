@@ -13,7 +13,7 @@
 ###############################################################################
 set -u
 
-VERSION="1.3.2"
+VERSION="1.3.3"
 PHP_EA="ea-php82"
 REPO_TAR="https://github.com/mahdiMGF2/mirzabot/archive/refs/heads/main.tar.gz"
 META_ROOT="/root/.mirza-cpanel"
@@ -485,6 +485,13 @@ PY
       "ALTER TABLE marzban_panel MODIFY password_panel TEXT;" >/dev/null 2>&1 \
       && ok "password_panel → TEXT" \
       || true
+  fi
+
+  # MariaDB mysqldump rejects MySQL8 --ssl-mode=DISABLED (backup cron silent-fail)
+  local backup_php="$DOCROOT/cronbot/backupbot.php"
+  if [ -f "$backup_php" ] && grep -q 'ssl-mode=DISABLED' "$backup_php" 2>/dev/null; then
+    sed -i 's/ --ssl-mode=DISABLED//' "$backup_php"
+    ok "backupbot.php: removed --ssl-mode (MariaDB)."
   fi
 }
 
