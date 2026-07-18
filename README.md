@@ -200,6 +200,10 @@ Kode asli bot: [mahdiMGF2/mirzabot](https://github.com/mahdiMGF2/mirzabot)
 
 ### Changelog
 
+**v1.3.4**
+- Backup cron: run `backupbot.php` via `ea-php82` CLI (cPanel web PHP has `exec` disabled → HTTP curl backup always failed)
+- `backupbot.php`: prefer `/usr/bin/mysqldump`
+
 **v1.3.3**
 - Patch `cronbot/backupbot.php`: remove `--ssl-mode=DISABLED` (MariaDB unknown variable → backup silent fail)
 

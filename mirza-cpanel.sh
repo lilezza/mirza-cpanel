@@ -13,7 +13,7 @@
 ###############################################################################
 set -u
 
-VERSION="1.3.3"
+VERSION="1.3.4"
 PHP_EA="ea-php82"
 REPO_TAR="https://github.com/mahdiMGF2/mirzabot/archive/refs/heads/main.tar.gz"
 META_ROOT="/root/.mirza-cpanel"
@@ -216,7 +216,11 @@ install_crons(){
   info "Cron → $DOMAIN"
   local CRON_TMP j m f
   CRON_TMP="$(mktemp)"
-  crontab -u "$CPUSER" -l 2>/dev/null | grep -v "https://${DOMAIN}/cronbot/" > "$CRON_TMP" || true
+  # drop old curl + CLI cron lines for this bot
+  crontab -u "$CPUSER" -l 2>/dev/null \
+    | grep -v "https://${DOMAIN}/cronbot/" \
+    | grep -v "${DOCROOT}/cronbot/" \
+    > "$CRON_TMP" || true
   for j in \
     "*/1|croncard" "*/1|NoticationsService" "*/1|sendmessage" "*/1|activeconfig" \
     "*/1|disableconfig" "*/1|iranpay1" "*/2|gift" "*/2|configtest" "*/3|plisio" \
@@ -226,7 +230,8 @@ install_crons(){
     m="${j%%|*}"; f="${j##*|}"
     echo "$m * * * * curl -s https://${DOMAIN}/cronbot/${f}.php >/dev/null 2>&1" >> "$CRON_TMP"
   done
-  echo "0 */5 * * * curl -s https://${DOMAIN}/cronbot/backupbot.php >/dev/null 2>&1" >> "$CRON_TMP"
+  # backup needs exec/mysqldump — cPanel web PHP disables exec; run via CLI
+  echo "0 */5 * * * cd ${DOCROOT}/cronbot && /usr/local/bin/ea-php82 backupbot.php >/dev/null 2>&1" >> "$CRON_TMP"
   crontab -u "$CPUSER" "$CRON_TMP" && ok "Cron OK." || warn "Cron fail."
   rm -f "$CRON_TMP"
 }
@@ -489,9 +494,15 @@ PY
 
   # MariaDB mysqldump rejects MySQL8 --ssl-mode=DISABLED (backup cron silent-fail)
   local backup_php="$DOCROOT/cronbot/backupbot.php"
-  if [ -f "$backup_php" ] && grep -q 'ssl-mode=DISABLED' "$backup_php" 2>/dev/null; then
-    sed -i 's/ --ssl-mode=DISABLED//' "$backup_php"
-    ok "backupbot.php: removed --ssl-mode (MariaDB)."
+  if [ -f "$backup_php" ]; then
+    if grep -q 'ssl-mode=DISABLED' "$backup_php" 2>/dev/null; then
+      sed -i 's/ --ssl-mode=DISABLED//' "$backup_php"
+      ok "backupbot.php: removed --ssl-mode (MariaDB)."
+    fi
+    if grep -qE '[^/]mysqldump -h' "$backup_php" 2>/dev/null; then
+      sed -i 's|mysqldump -h|/usr/bin/mysqldump -h|' "$backup_php"
+      ok "backupbot.php: mysqldump → /usr/bin/mysqldump"
+    fi
   fi
 }
 
@@ -790,7 +801,10 @@ do_backup_db(){
 remove_bot_crons(){
   local CRON_TMP
   CRON_TMP="$(mktemp)"
-  crontab -u "$CPUSER" -l 2>/dev/null | grep -v "https://${DOMAIN}/cronbot/" > "$CRON_TMP" || true
+  crontab -u "$CPUSER" -l 2>/dev/null \
+    | grep -v "https://${DOMAIN}/cronbot/" \
+    | grep -v "${DOCROOT}/cronbot/" \
+    > "$CRON_TMP" || true
   if [ -s "$CRON_TMP" ]; then
     crontab -u "$CPUSER" "$CRON_TMP" && ok "Cron lines remove shod." || warn "Cron update fail."
   else
