@@ -202,6 +202,14 @@ Kode asli bot: [mahdiMGF2/mirzabot](https://github.com/mahdiMGF2/mirzabot)
 
 ### Changelog
 
+**v1.3.6**
+- Fix uninstall: digar `load_account` CPUSER-e bot digar ro overwrite nemikone (multi-account safe)
+- Backup cron az `php_bin()` estefade mikone (na hardcode ea-php82)
+- Restore: option DROP tables ghabl az import
+- Rebecca patch: digar roye SKIP, false "OK patched" nemide
+- credentials.txt: token/DB pass digar append nemishe
+- REPL: `run_cmd "$line"` quoted
+
 **v1.3.5**
 - `self-update` / `update-cli` — update khode CLI az GitHub (bedoon curl dasti)
 

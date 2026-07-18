@@ -13,7 +13,7 @@
 ###############################################################################
 set -u
 
-VERSION="1.3.5"
+VERSION="1.3.6"
 PHP_EA="ea-php82"
 REPO_TAR="https://github.com/mahdiMGF2/mirzabot/archive/refs/heads/main.tar.gz"
 REPO_CLI="https://raw.githubusercontent.com/lilezza/mirza-cpanel/main/mirza-cpanel.sh"
@@ -111,10 +111,9 @@ EOF
     echo "Domain      : ${DOMAIN}"
     echo "Docroot     : ${DOCROOT}"
     echo "DB          : ${DBNAME} / ${DBUSER}"
-    echo "DB pass     : ${DBPASS}"
-    echo "Bot token   : ${BOT_TOKEN}"
     echo "Bot user    : @${BOT_USERNAME}"
     echo "Admin ID    : ${ADMIN_ID}"
+    echo "Secrets     : see ${f} (chmod 600)"
     echo
   } >> "$CREDS_FILE"
 }
@@ -232,7 +231,9 @@ install_crons(){
     echo "$m * * * * curl -s https://${DOMAIN}/cronbot/${f}.php >/dev/null 2>&1" >> "$CRON_TMP"
   done
   # backup needs exec/mysqldump — cPanel web PHP disables exec; run via CLI
-  echo "0 */5 * * * cd ${DOCROOT}/cronbot && /usr/local/bin/ea-php82 backupbot.php >/dev/null 2>&1" >> "$CRON_TMP"
+  local PHPCLI
+  PHPCLI="$(php_bin)"
+  echo "0 */5 * * * cd ${DOCROOT}/cronbot && ${PHPCLI} backupbot.php >/dev/null 2>&1" >> "$CRON_TMP"
   crontab -u "$CPUSER" "$CRON_TMP" && ok "Cron OK." || warn "Cron fail."
   rm -f "$CRON_TMP"
 }
@@ -470,13 +471,17 @@ new = """    } elseif ($marzban_list_get['type'] == \"rebecca\") {
             $text_marzban = sprintf($textbotlang['Admin']['adminphp']['ok_select_panel_user_4'], $ListSell, $ListSellSUM, $marzban_list_get['agent']);
             sendmessage($from_id, $text_marzban, $optionrebecca, 'HTML');"""
 if old not in t:
-    print("SKIP: rebecca block pattern not found", file=sys.stderr)
-    sys.exit(0)
+    print("SKIP")
+    sys.exit(2)
 p.write_text(t.replace(old, new, 1), encoding="utf-8")
 print("OK")
+sys.exit(0)
 PY
-      if [ $? -eq 0 ]; then
+      py_rc=$?
+      if [ "$py_rc" -eq 0 ]; then
         ok "Rebecca admin.php patched."
+      elif [ "$py_rc" -eq 2 ]; then
+        info "Rebecca patch skip (pattern nist / ghablan patch shode)."
       else
         warn "Rebecca patch fail — dasti check kon."
       fi
@@ -688,6 +693,17 @@ do_restore(){
   read -rp "  Edame? (y/n): " yn
   [ "$yn" = "y" ] || return 1
 
+  read -rp "  Ghabl az import hame table-ha DROP shan? (y/n) [y]: " drop_yn
+  drop_yn="${drop_yn:-y}"
+  if [ "$drop_yn" = "y" ] || [ "$drop_yn" = "Y" ]; then
+    info "Drop tables ${DBNAME}..."
+    mysql "$DBNAME" -N -e "SHOW TABLES" 2>/dev/null | while IFS= read -r tbl; do
+      [ -n "$tbl" ] || continue
+      mysql "$DBNAME" -e "SET FOREIGN_KEY_CHECKS=0; DROP TABLE IF EXISTS \`${tbl}\`;" >/dev/null 2>&1 || true
+    done
+    ok "Tables drop shodand (ya khali bood)."
+  fi
+
   local TMP_SQL
   TMP_SQL="$(mktemp)"
   info "Sanitize collation (MySQL8 → MariaDB)..."
@@ -877,10 +893,13 @@ do_uninstall(){
   echo -e "\n${C_BOLD}==== Uninstall Mirza bot ====${CR}"
   warn "In kar: webhook, cron, files, DB, subdomain, meta ro hazf mikone."
   pick_bot || return 1
-  load_account
+  # NOTE: do NOT load_account here — it overwrites CPUSER/ROOT_DOMAIN from
+  # account.conf and can target the wrong cPanel user when multiple accounts exist.
+  # pick_bot → load_bot_meta already set CPUSER/DOCROOT/DB* for this bot.
 
   echo
   echo -e "  Domain  : ${C_BOLD}${DOMAIN}${CR}"
+  echo -e "  cPanel  : ${CPUSER}"
   echo -e "  Docroot : ${DOCROOT}"
   echo -e "  DB      : ${DBNAME} / ${DBUSER}"
   echo -e "  Bot     : @${BOT_USERNAME}"
@@ -1087,7 +1106,8 @@ repl(){
     line="${line#"${line%%[![:space:]]*}"}"
     line="${line%"${line##*[![:space:]]}"}"
     [ -z "$line" ] && continue
-    run_cmd $line
+    # quote: preserve single-token commands; avoid word-splitting bugs
+    run_cmd "$line"
   done
 }
 
