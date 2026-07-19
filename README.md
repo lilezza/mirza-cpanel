@@ -202,6 +202,10 @@ Kode asli bot: [mahdiMGF2/mirzabot](https://github.com/mahdiMGF2/mirzabot)
 
 ### Changelog
 
+**v1.3.7**
+- Fix `set-admin` / `info`: neshun mide meta + config.php + DB `admin` table (ghablan faghat meta)
+- `set-admin` digar DB `admin.id_admin` ro ham sync mikone (Mirza panel az DB check mikone)
+
 **v1.3.6**
 - Fix uninstall: digar `load_account` CPUSER-e bot digar ro overwrite nemikone (multi-account safe)
 - Backup cron az `php_bin()` estefade mikone (na hardcode ea-php82)

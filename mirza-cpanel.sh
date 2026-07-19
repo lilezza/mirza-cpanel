@@ -13,7 +13,7 @@
 ###############################################################################
 set -u
 
-VERSION="1.3.6"
+VERSION="1.3.7"
 PHP_EA="ea-php82"
 REPO_TAR="https://github.com/mahdiMGF2/mirzabot/archive/refs/heads/main.tar.gz"
 REPO_CLI="https://raw.githubusercontent.com/lilezza/mirza-cpanel/main/mirza-cpanel.sh"
@@ -277,6 +277,84 @@ cfg_set_php_var(){
   else
     bad "Variable \$${var} too config peyda nashod."
     return 1
+  fi
+}
+
+# Read $varname = '...' from config.php (empty if missing)
+cfg_get_php_var(){
+  local var="$1" cfg="${2:-$DOCROOT/config.php}"
+  [ -f "$cfg" ] || { echo ""; return 1; }
+  sed -n -E "s/^\\\$${var}[[:space:]]*=[[:space:]]*'([^']*)'.*/\1/p" "$cfg" | head -1
+}
+
+# Mirza checks admin via DB table `admin.id_admin` (keyboard.php),
+# AND $adminnumber in config.php. Meta/CLI can drift after restore.
+db_list_admin_ids(){
+  [ -n "${DBNAME:-}" ] && [ -n "${DBUSER:-}" ] && [ -n "${DBPASS:-}" ] || return 1
+  mysql -u "$DBUSER" -p"$DBPASS" "$DBNAME" -N -e \
+    "SELECT id_admin FROM admin;" 2>/dev/null
+}
+
+# Sync Telegram admin ID into DB admin table (replace old → new when possible).
+db_sync_admin_id(){
+  local old_id="$1" new_id="$2" cnt
+  [ -n "$new_id" ] || return 1
+  [ -n "${DBNAME:-}" ] && [ -n "${DBUSER:-}" ] && [ -n "${DBPASS:-}" ] || {
+    warn "DB creds nist — admin table update skip."
+    return 1
+  }
+  # If old row exists and new is free → rename (keeps username/password/rule)
+  if [ -n "$old_id" ] && [ "$old_id" != "$new_id" ]; then
+    cnt=$(mysql -u "$DBUSER" -p"$DBPASS" "$DBNAME" -N -e \
+      "SELECT COUNT(*) FROM admin WHERE id_admin='${old_id}';" 2>/dev/null || echo 0)
+    if [ "${cnt:-0}" -gt 0 ]; then
+      local has_new
+      has_new=$(mysql -u "$DBUSER" -p"$DBPASS" "$DBNAME" -N -e \
+        "SELECT COUNT(*) FROM admin WHERE id_admin='${new_id}';" 2>/dev/null || echo 0)
+      if [ "${has_new:-0}" -eq 0 ]; then
+        if mysql -u "$DBUSER" -p"$DBPASS" "$DBNAME" -e \
+          "UPDATE admin SET id_admin='${new_id}' WHERE id_admin='${old_id}';" >/dev/null 2>&1; then
+          ok "DB admin: ${old_id} → ${new_id}"
+          return 0
+        fi
+      fi
+    fi
+  fi
+  # Ensure new id exists (Mirza may have only id_admin, or extra cols)
+  cnt=$(mysql -u "$DBUSER" -p"$DBPASS" "$DBNAME" -N -e \
+    "SELECT COUNT(*) FROM admin WHERE id_admin='${new_id}';" 2>/dev/null || echo 0)
+  if [ "${cnt:-0}" -gt 0 ]; then
+    ok "DB admin: ${new_id} ghablan hast."
+    return 0
+  fi
+  if mysql -u "$DBUSER" -p"$DBPASS" "$DBNAME" -e \
+    "INSERT INTO admin (id_admin) VALUES ('${new_id}');" >/dev/null 2>&1; then
+    ok "DB admin: insert ${new_id}"
+    return 0
+  fi
+  # Extended schema (username/password/rule NOT NULL) — update first row
+  if mysql -u "$DBUSER" -p"$DBPASS" "$DBNAME" -e \
+    "UPDATE admin SET id_admin='${new_id}' LIMIT 1;" >/dev/null 2>&1; then
+    ok "DB admin: update row → ${new_id}"
+    return 0
+  fi
+  warn "DB admin table update fail — dasti too phpMyAdmin id_admin ro avaz kon."
+  return 1
+}
+
+show_admin_sources(){
+  local cfg_admin db_admins
+  cfg_admin="$(cfg_get_php_var adminnumber 2>/dev/null || true)"
+  db_admins="$(db_list_admin_ids 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+  echo -e "  ${C_DIM}--- Admin sources (bayad yeki bashan) ---${CR}"
+  echo -e "  Meta (CLI)     : ${ADMIN_ID:-?}"
+  echo -e "  config.php     : ${cfg_admin:-?}"
+  echo -e "  DB admin table : ${db_admins:-?(khali/fail)}"
+  if [ -n "${cfg_admin:-}" ] && [ -n "${ADMIN_ID:-}" ] && [ "$cfg_admin" != "$ADMIN_ID" ]; then
+    warn "Meta != config.php — set-admin ya restore sync nakarde."
+  fi
+  if [ -n "${db_admins:-}" ] && [ -n "${cfg_admin:-}" ] && ! echo " ${db_admins} " | grep -q " ${cfg_admin} "; then
+    warn "config.php admin too DB admin table nist — bot panel baz nemishe."
   fi
 }
 
@@ -629,7 +707,8 @@ do_info(){
   echo -e "  DB pass     : ${DBPASS}"
   echo -e "  Token       : ${BOT_TOKEN}"
   echo -e "  Username    : @${BOT_USERNAME}"
-  echo -e "  Admin ID    : ${ADMIN_ID}"
+  echo
+  show_admin_sources
   echo
   info "Webhook info:"
   curl -s "https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo" | head -c 500
@@ -736,6 +815,9 @@ do_restore(){
   echo "    1) Admin panel → domain / sub-link ha → ${DOMAIN}"
   echo "    2) Payment callback URL ha"
   echo "    3) Telegram /start"
+  echo "    4) Admin ID: meta/config momken-e ba DB fargh kone — check:"
+  show_admin_sources
+  echo -e "    Age fargh daran: ${C_BOLD}set-admin${CR} bezan ta sync shan."
   echo
 }
 
@@ -783,14 +865,26 @@ do_set_admin(){
   need_root || return 1
   pick_bot || return 1
   echo
-  info "Admin ID alan: ${ADMIN_ID}"
-  read -rp "  Admin ID jadid: " NEW_ADMIN
+  # Show all sources — Mirza uses DB admin table for panel access, not only meta
+  show_admin_sources
+  echo
+  local OLD_ADMIN CFG_ADMIN
+  OLD_ADMIN="${ADMIN_ID:-}"
+  CFG_ADMIN="$(cfg_get_php_var adminnumber 2>/dev/null || true)"
+  [ -n "$CFG_ADMIN" ] && OLD_ADMIN="$CFG_ADMIN"
+  info "Admin asasi (config/meta): ${OLD_ADMIN:-?}"
+  read -rp "  Admin ID jadid (Telegram chat id): " NEW_ADMIN
   [ -n "$NEW_ADMIN" ] || { bad "Khali."; return 1; }
+  [[ "$NEW_ADMIN" =~ ^[0-9]+$ ]] || { bad "Admin ID bayad adad bashe."; return 1; }
 
   ADMIN_ID="$NEW_ADMIN"
   cfg_set_php_var "adminnumber" "$ADMIN_ID" || return 1
+  db_sync_admin_id "$OLD_ADMIN" "$ADMIN_ID" || true
   save_bot_meta
-  ok "Admin ID avaz shod → ${ADMIN_ID}"
+  echo
+  ok "Admin ID sync shod → ${ADMIN_ID}"
+  show_admin_sources
+  echo
 }
 
 do_webhook(){
