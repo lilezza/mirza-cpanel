@@ -13,7 +13,7 @@
 ###############################################################################
 set -u
 
-VERSION="1.3.7"
+VERSION="1.3.8"
 PHP_EA="ea-php82"
 REPO_TAR="https://github.com/mahdiMGF2/mirzabot/archive/refs/heads/main.tar.gz"
 REPO_CLI="https://raw.githubusercontent.com/lilezza/mirza-cpanel/main/mirza-cpanel.sh"
@@ -22,6 +22,8 @@ CONF_FILE="${META_ROOT}/account.conf"
 BOTS_DIR="${META_ROOT}/bots"
 CREDS_FILE="${META_ROOT}/credentials.txt"
 BIN_PATH="/usr/local/bin/mirza"
+RENEWAL_DAYS=30
+RENEWAL_WARN_DAYS=3
 
 C_OK=$'\e[92m'; C_BAD=$'\e[91m'; C_WARN=$'\e[93m'; C_INFO=$'\e[96m'
 C_DIM=$'\e[2m'; C_BOLD=$'\e[1m'; CR=$'\e[0m'
@@ -52,11 +54,14 @@ sanitize(){ echo "$1" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9'; }
 # ---------- account ----------
 load_account(){
   ensure_meta
-  CPUSER=""; ROOT_DOMAIN=""
+  CPUSER=""; ROOT_DOMAIN=""; NOTIFY_ADMIN_ID=""
   if [ -f "$CONF_FILE" ]; then
     # shellcheck disable=SC1090
     source "$CONF_FILE"
   fi
+  # Allow account.conf to override defaults
+  RENEWAL_DAYS="${RENEWAL_DAYS:-30}"
+  RENEWAL_WARN_DAYS="${RENEWAL_WARN_DAYS:-3}"
 }
 
 save_account(){
@@ -64,6 +69,9 @@ save_account(){
   cat > "$CONF_FILE" <<EOF
 CPUSER='${CPUSER}'
 ROOT_DOMAIN='${ROOT_DOMAIN}'
+NOTIFY_ADMIN_ID='${NOTIFY_ADMIN_ID:-}'
+RENEWAL_DAYS='${RENEWAL_DAYS:-30}'
+RENEWAL_WARN_DAYS='${RENEWAL_WARN_DAYS:-3}'
 EOF
   chmod 600 "$CONF_FILE"
 }
@@ -89,7 +97,14 @@ ask_account_once(){
 bot_meta_path(){ echo "${BOTS_DIR}/${1}.env"; }
 
 save_bot_meta(){
-  local f; f="$(bot_meta_path "$DOMAIN")"
+  local f now keep_installed keep_renewed keep_warn
+  f="$(bot_meta_path "$DOMAIN")"
+  now="$(date -Iseconds 2>/dev/null || date)"
+  # Preserve install / renew dates across set-token / set-admin
+  keep_installed="${INSTALLED_AT:-}"
+  keep_renewed="${RENEWED_AT:-}"
+  keep_warn="${LAST_RENEWAL_WARN:-}"
+  [ -n "$keep_installed" ] || keep_installed="$now"
   cat > "$f" <<EOF
 DOMAIN='${DOMAIN}'
 SUB='${SUB}'
@@ -103,7 +118,9 @@ BOT_TOKEN='${BOT_TOKEN}'
 BOT_USERNAME='${BOT_USERNAME}'
 ADMIN_ID='${ADMIN_ID}'
 EMAIL='${EMAIL:-}'
-INSTALLED_AT='$(date -Iseconds 2>/dev/null || date)'
+INSTALLED_AT='${keep_installed}'
+RENEWED_AT='${keep_renewed}'
+LAST_RENEWAL_WARN='${keep_warn}'
 EOF
   chmod 600 "$f"
   {
@@ -116,6 +133,61 @@ EOF
     echo "Secrets     : see ${f} (chmod 600)"
     echo
   } >> "$CREDS_FILE"
+}
+
+# Period start = last renew, else install. Expiry = start + RENEWAL_DAYS.
+bot_period_start(){
+  if [ -n "${RENEWED_AT:-}" ]; then echo "$RENEWED_AT"
+  else echo "${INSTALLED_AT:-}"; fi
+}
+
+bot_expiry_epoch(){
+  local start days
+  start="$(bot_period_start)"
+  [ -n "$start" ] || { echo ""; return 1; }
+  days="${RENEWAL_DAYS:-30}"
+  date -d "${start} +${days} days" +%s 2>/dev/null || return 1
+}
+
+bot_days_left(){
+  local exp now
+  exp="$(bot_expiry_epoch)" || { echo ""; return 1; }
+  now="$(date +%s)"
+  echo $(( (exp - now) / 86400 ))
+}
+
+bot_expiry_date(){
+  local exp
+  exp="$(bot_expiry_epoch)" || { echo "?"; return 1; }
+  date -d "@${exp}" '+%Y-%m-%d' 2>/dev/null || echo "?"
+}
+
+format_renewal_line(){
+  local left expd
+  left="$(bot_days_left 2>/dev/null || echo "")"
+  expd="$(bot_expiry_date 2>/dev/null || echo "?")"
+  if [ -z "$left" ]; then
+    echo "renew : ? (INSTALLED_AT nist)"
+    return
+  fi
+  if [ "$left" -lt 0 ]; then
+    echo -e "renew : ${C_BAD}EXPIRED${CR} (deadline ${expd}, $(( -left )) roz ghabli)"
+  elif [ "$left" -le "${RENEWAL_WARN_DAYS:-3}" ]; then
+    echo -e "renew : ${C_WARN}${left} roz momde${CR} → ${expd}"
+  else
+    echo -e "renew : ${left} roz → ${expd}"
+  fi
+}
+
+tg_send(){
+  # tg_send TOKEN CHAT_ID MESSAGE
+  local token="$1" chat="$2" msg="$3" resp
+  [ -n "$token" ] && [ -n "$chat" ] || return 1
+  resp=$(curl -s -X POST "https://api.telegram.org/bot${token}/sendMessage" \
+    --data-urlencode "chat_id=${chat}" \
+    --data-urlencode "text=${msg}" \
+    -d "parse_mode=HTML" 2>/dev/null) || true
+  echo "$resp" | grep -q '"ok":true'
 }
 
 load_bot_meta(){
@@ -689,14 +761,18 @@ do_list(){
     echo -e "      bot   : @${BOT_USERNAME}"
     echo -e "      admin : ${ADMIN_ID}"
     echo -e "      db    : ${DBNAME}"
+    echo -e "      $(format_renewal_line)"
     echo -e "      path  : ${C_DIM}${DOCROOT}${CR}"
   done < <(list_bot_domains)
+  echo
+  info "Tamdid: ${RENEWAL_DAYS} roz | warn: ${RENEWAL_WARN_DAYS} roz ghabl. Commands: renewals | renew | check-renewals"
   echo
 }
 
 do_info(){
   need_root || return 1
   pick_bot || return 1
+  load_account
   echo
   echo -e "  ${C_BOLD}${DOMAIN}${CR}"
   echo -e "  Bot URL     : https://${DOMAIN}"
@@ -707,12 +783,166 @@ do_info(){
   echo -e "  DB pass     : ${DBPASS}"
   echo -e "  Token       : ${BOT_TOKEN}"
   echo -e "  Username    : @${BOT_USERNAME}"
+  echo -e "  Installed   : ${INSTALLED_AT:-?}"
+  echo -e "  Last renew  : ${RENEWED_AT:-—(hanuz renew nashode)}"
+  echo -e "  $(format_renewal_line)"
   echo
   show_admin_sources
   echo
   info "Webhook info:"
   curl -s "https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo" | head -c 500
   echo -e "\n"
+}
+
+do_renewals(){
+  need_root || return 1; ensure_meta; load_account
+  echo -e "\n${C_BOLD}==== Bot renewals (${RENEWAL_DAYS} roz) ====${CR}"
+  echo
+  printf "  %-32s %-18s %6s  %s\n" "DOMAIN" "BOT" "LEFT" "DEADLINE"
+  echo "  ------------------------------------------------------------------"
+  local d left expd
+  while IFS= read -r d; do
+    # shellcheck disable=SC1090
+    source "$(bot_meta_path "$d")"
+    left="$(bot_days_left 2>/dev/null || echo "?")"
+    expd="$(bot_expiry_date 2>/dev/null || echo "?")"
+    printf "  %-32s %-18s %6s  %s\n" "${DOMAIN}" "@${BOT_USERNAME}" "${left}" "${expd}"
+  done < <(list_bot_domains)
+  echo
+  info "Ba'd az daryaft pool: mirza> renew"
+  info "Alert Telegram: mirza> notify-setup  +  check-renewals (cron)"
+  echo
+}
+
+do_renew(){
+  need_root || return 1
+  echo -e "\n${C_BOLD}==== Renew bot (+${RENEWAL_DAYS} roz) ====${CR}"
+  warn "Faghat ba'd az daryaft pool / tamdid customer."
+  pick_bot || return 1
+  load_account
+  echo
+  echo -e "  Bot     : @${BOT_USERNAME} (${DOMAIN})"
+  echo -e "  Alan    : $(format_renewal_line)"
+  read -rp "  Renew konam? (y/n): " yn
+  [ "$yn" = "y" ] || [ "$yn" = "Y" ] || return 1
+  RENEWED_AT="$(date -Iseconds 2>/dev/null || date)"
+  LAST_RENEWAL_WARN=""
+  save_bot_meta
+  ok "Renew shod. Deadline jadid: $(bot_expiry_date) ($(bot_days_left) roz)"
+  echo
+}
+
+do_notify_setup(){
+  need_root || return 1; ensure_meta; load_account
+  echo -e "\n${C_BOLD}==== Renewal Telegram alerts ====${CR}"
+  info "Har bot be ADMIN_ID khodesh payam mide (customer)."
+  info "Optional: Telegram ID khodet baraye copy alert."
+  echo
+  echo -e "  NOTIFY_ADMIN_ID alan: ${NOTIFY_ADMIN_ID:-—(khali)}"
+  read -rp "  Telegram ID khodet (ya Enter=bedoon taghir): " nid
+  if [ -n "$nid" ]; then
+    [[ "$nid" =~ ^[0-9]+$ ]] || { bad "Bayad adad bashe."; return 1; }
+    NOTIFY_ADMIN_ID="$nid"
+  fi
+  read -rp "  Renewal days [${RENEWAL_DAYS}]: " rd
+  [ -n "$rd" ] && RENEWAL_DAYS="$rd"
+  read -rp "  Warn chand roz ghabl [${RENEWAL_WARN_DAYS}]: " wd
+  [ -n "$wd" ] && RENEWAL_WARN_DAYS="$wd"
+  # keep CPUSER/ROOT if set
+  if [ -z "${CPUSER:-}" ] || [ -z "${ROOT_DOMAIN:-}" ]; then
+    ask_account_once || true
+  fi
+  save_account
+  ok "Zakhire: notify=${NOTIFY_ADMIN_ID:-none} days=${RENEWAL_DAYS} warn=${RENEWAL_WARN_DAYS}"
+
+  echo
+  read -rp "  Cron roozane (10:00) baraye check-renewals? (y/n) [y]: " yc
+  yc="${yc:-y}"
+  if [ "$yc" = "y" ] || [ "$yc" = "Y" ]; then
+    local CRON_TMP
+    CRON_TMP="$(mktemp)"
+    crontab -l 2>/dev/null | grep -v 'mirza check-renewals' > "$CRON_TMP" || true
+    echo "0 10 * * * ${BIN_PATH} check-renewals >/dev/null 2>&1" >> "$CRON_TMP"
+    crontab "$CRON_TMP" && ok "Cron: har rooz 10:00 → mirza check-renewals" || warn "Cron fail."
+    rm -f "$CRON_TMP"
+  fi
+  echo
+  info "Test alan: mirza> check-renewals"
+  warn "Customer bayad /start be bot zade bashe ta payam begire."
+  echo
+}
+
+do_check_renewals(){
+  need_root || return 1; ensure_meta; load_account
+  echo -e "\n${C_BOLD}==== Check renewals / send alerts ====${CR}"
+  local d left expd msg skip_c=0
+  while IFS= read -r d; do
+    # shellcheck disable=SC1090
+    source "$(bot_meta_path "$d")"
+    left="$(bot_days_left 2>/dev/null || echo "")"
+    expd="$(bot_expiry_date 2>/dev/null || echo "?")"
+    if [ -z "$left" ]; then
+      warn "@${BOT_USERNAME}: INSTALLED_AT nist — skip"
+      continue
+    fi
+    # Only alert in warn window or expired
+    if [ "$left" -gt "${RENEWAL_WARN_DAYS:-3}" ]; then
+      info "@${BOT_USERNAME}: ${left} roz momde — OK"
+      skip_c=$((skip_c + 1))
+      continue
+    fi
+    # Don't spam same days_left twice
+    if [ "${LAST_RENEWAL_WARN:-}" = "$left" ]; then
+      info "@${BOT_USERNAME}: alert ${left}roz ghablan send shode — skip"
+      skip_c=$((skip_c + 1))
+      continue
+    fi
+
+    if [ "$left" -lt 0 ]; then
+      msg="⚠️ Bot hosting EXPIRED
+Bot: @${BOT_USERNAME}
+Domain: ${DOMAIN}
+Deadline: ${expd}
+$(( -left )) day(s) overdue.
+Please renew to keep the bot online."
+    elif [ "$left" -eq 0 ]; then
+      msg="⚠️ Bot hosting expires TODAY
+Bot: @${BOT_USERNAME}
+Domain: ${DOMAIN}
+Deadline: ${expd}
+Please renew now."
+    else
+      msg="⏰ Bot hosting renewal reminder
+Bot: @${BOT_USERNAME}
+Domain: ${DOMAIN}
+Days left: ${left}
+Deadline: ${expd}
+Please renew before expiry."
+    fi
+
+    local alert_ok=0
+    if tg_send "$BOT_TOKEN" "$ADMIN_ID" "$msg"; then
+      ok "@${BOT_USERNAME} → admin ${ADMIN_ID} (left=${left})"
+      alert_ok=1
+    else
+      warn "@${BOT_USERNAME} → admin fail ( /start zade? chat id dorost? )"
+    fi
+    if [ -n "${NOTIFY_ADMIN_ID:-}" ] && [ "$NOTIFY_ADMIN_ID" != "$ADMIN_ID" ]; then
+      if tg_send "$BOT_TOKEN" "$NOTIFY_ADMIN_ID" "[HOST] $msg"; then
+        ok "Copy → notify ${NOTIFY_ADMIN_ID}"
+        alert_ok=1
+      else
+        warn "Notify ID fail (bayad /start be @${BOT_USERNAME} zade bashi)."
+      fi
+    fi
+    if [ "$alert_ok" -eq 1 ]; then
+      LAST_RENEWAL_WARN="$left"
+      save_bot_meta
+    fi
+  done < <(list_bot_domains)
+  echo
+  ok "Check tamom."
+  echo
 }
 
 do_phpmyadmin(){
@@ -1105,8 +1335,12 @@ cat <<EOF
   Commands:
     ${C_OK}install${CR}       Nasb bot jadid (subdomain)
     ${C_OK}uninstall${CR}     Hazf kamel yek bot
-    ${C_OK}list${CR}          List bot ha
+    ${C_OK}list${CR}          List bot ha (+ rooz renew)
     ${C_OK}info${CR}          Joziyat yek bot
+    ${C_OK}renewals${CR}      Table deadline tamdid (30 roz)
+    ${C_OK}renew${CR}         Reset cycle ba'd az daryaft pool
+    ${C_OK}check-renewals${CR} Send alert Telegram (3 roz ghabl)
+    ${C_OK}notify-setup${CR}   Set notify ID + cron roozane
     ${C_OK}update${CR}        Update code-e yek bot
     ${C_OK}update-all${CR}    Update hame bot ha
     ${C_OK}self-update${CR}   Update khode CLI mirza (az GitHub)
@@ -1167,6 +1401,10 @@ run_cmd(){
     uninstall|remove|delete) do_uninstall ;;
     list|ls)     do_list ;;
     info|show)   do_info ;;
+    renewals|expiry|deadlines) do_renewals ;;
+    renew)       do_renew ;;
+    check-renewals|renewal-check) do_check_renewals ;;
+    notify-setup|setup-notify) do_notify_setup ;;
     update)      do_update ;;
     update-all)  do_update_all ;;
     restore)     do_restore ;;
@@ -1189,7 +1427,7 @@ repl(){
   need_root || exit 1
   ensure_meta
   echo -e "\n${C_INFO}${C_BOLD}  Mirza cPanel CLI${CR}  v${VERSION}"
-  echo -e "  ${C_DIM}help | install | uninstall | update | self-update | restore | phpmyadmin | set-token | set-admin | exit${CR}\n"
+  echo -e "  ${C_DIM}help | install | list | renewals | renew | notify-setup | check-renewals | self-update | exit${CR}\n"
   local line
   while true; do
     # readline if available

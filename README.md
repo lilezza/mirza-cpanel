@@ -202,6 +202,13 @@ Kode asli bot: [mahdiMGF2/mirzabot](https://github.com/mahdiMGF2/mirzabot)
 
 ### Changelog
 
+**v1.3.8**
+- Bot hosting renewals (30-day cycle az `INSTALLED_AT` / `RENEWED_AT`)
+- `list` / `info` / `renewals` — neshun mide chand roz momde + deadline
+- `renew` — ba'd az daryaft pool, cycle ro reset mikone
+- `notify-setup` + `check-renewals` — alert Telegram be admin bot (va optional notify ID to) + cron roozane
+- `save_bot_meta` digar `INSTALLED_AT` ro ba set-token/set-admin overwrite nemikone
+
 **v1.3.7**
 - Fix `set-admin` / `info`: neshun mide meta + config.php + DB `admin` table (ghablan faghat meta)
 - `set-admin` digar DB `admin.id_admin` ro ham sync mikone (Mirza panel az DB check mikone)
