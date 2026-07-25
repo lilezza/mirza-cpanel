@@ -305,9 +305,10 @@ install_crons(){
   stag="$(cron_stagger_sec "$DOMAIN")"
   bak_h="$(cron_backup_hour_offset "$DOMAIN")"
   # drop old curl + CLI cron lines for this bot
+  # NOTE: match without requiring trailing slash — backup lines use "cronbot &&"
   crontab -u "$CPUSER" -l 2>/dev/null \
-    | grep -v "https://${DOMAIN}/cronbot/" \
-    | grep -v "${DOCROOT}/cronbot/" \
+    | grep -v "https://${DOMAIN}/cronbot" \
+    | grep -v "${DOCROOT}/cronbot" \
     > "$CRON_TMP" || true
   for j in \
     "*/1|croncard" "*/1|NoticationsService" "*/1|sendmessage" "*/1|activeconfig" \
@@ -1272,8 +1273,8 @@ remove_bot_crons(){
   local CRON_TMP
   CRON_TMP="$(mktemp)"
   crontab -u "$CPUSER" -l 2>/dev/null \
-    | grep -v "https://${DOMAIN}/cronbot/" \
-    | grep -v "${DOCROOT}/cronbot/" \
+    | grep -v "https://${DOMAIN}/cronbot" \
+    | grep -v "${DOCROOT}/cronbot" \
     > "$CRON_TMP" || true
   if [ -s "$CRON_TMP" ]; then
     crontab -u "$CPUSER" "$CRON_TMP" && ok "Cron lines remove shod." || warn "Cron update fail."
