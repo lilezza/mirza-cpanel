@@ -202,6 +202,12 @@ Kode asli bot: [mahdiMGF2/mirzabot](https://github.com/mahdiMGF2/mirzabot)
 
 ### Changelog
 
+**v1.3.9**
+- `cleanup` — truncate `error_log` / log-haye bozorg, junk tmp, SQL backup kohne
+- `optimize` — cleanup + **cron stagger** (bot-ha yek-ja Apache ro spike nemikonan) + curl `--max-time` + weekly cleanup cron
+- `refresh-crons` — dobare nasb cron hame bot-ha ba stagger / backup offset
+- Backup cron digar hame sa'at 0 nist — offset per-bot
+
 **v1.3.8**
 - Bot hosting renewals (30-day cycle az `INSTALLED_AT` / `RENEWED_AT`)
 - `list` / `info` / `renewals` — neshun mide chand roz momde + deadline

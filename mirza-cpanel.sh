@@ -13,7 +13,7 @@
 ###############################################################################
 set -u
 
-VERSION="1.3.8"
+VERSION="1.3.9"
 PHP_EA="ea-php82"
 REPO_TAR="https://github.com/mahdiMGF2/mirzabot/archive/refs/heads/main.tar.gz"
 REPO_CLI="https://raw.githubusercontent.com/lilezza/mirza-cpanel/main/mirza-cpanel.sh"
@@ -24,6 +24,7 @@ CREDS_FILE="${META_ROOT}/credentials.txt"
 BIN_PATH="/usr/local/bin/mirza"
 RENEWAL_DAYS=30
 RENEWAL_WARN_DAYS=3
+LOG_MAX_BYTES=1048576
 
 C_OK=$'\e[92m'; C_BAD=$'\e[91m'; C_WARN=$'\e[93m'; C_INFO=$'\e[96m'
 C_DIM=$'\e[2m'; C_BOLD=$'\e[1m'; CR=$'\e[0m'
@@ -284,10 +285,25 @@ set_webhook(){
   fi
 }
 
+# Stagger cron hits so all bots don't hammer Apache at second 0.
+cron_stagger_sec(){
+  local s
+  s="$(printf '%s' "${1:-$DOMAIN}" | cksum 2>/dev/null | awk '{print $1}')"
+  echo $(( ${s:-0} % 46 ))
+}
+
+cron_backup_hour_offset(){
+  local s
+  s="$(printf '%s' "${1:-$DOMAIN}" | cksum 2>/dev/null | awk '{print $1}')"
+  echo $(( ${s:-0} % 5 ))
+}
+
 install_crons(){
   info "Cron → $DOMAIN"
-  local CRON_TMP j m f
+  local CRON_TMP j m f stag bak_h
   CRON_TMP="$(mktemp)"
+  stag="$(cron_stagger_sec "$DOMAIN")"
+  bak_h="$(cron_backup_hour_offset "$DOMAIN")"
   # drop old curl + CLI cron lines for this bot
   crontab -u "$CPUSER" -l 2>/dev/null \
     | grep -v "https://${DOMAIN}/cronbot/" \
@@ -300,14 +316,127 @@ install_crons(){
     "*/15|uptime_panel" "*/30|expireagent"
   do
     m="${j%%|*}"; f="${j##*|}"
-    echo "$m * * * * curl -s https://${DOMAIN}/cronbot/${f}.php >/dev/null 2>&1" >> "$CRON_TMP"
+    # sleep stagger + curl max-time → kamtar spike / hung worker
+    echo "$m * * * * sleep ${stag}; curl -s --max-time 20 https://${DOMAIN}/cronbot/${f}.php >/dev/null 2>&1" >> "$CRON_TMP"
   done
   # backup needs exec/mysqldump — cPanel web PHP disables exec; run via CLI
   local PHPCLI
   PHPCLI="$(php_bin)"
-  echo "0 */5 * * * cd ${DOCROOT}/cronbot && ${PHPCLI} backupbot.php >/dev/null 2>&1" >> "$CRON_TMP"
-  crontab -u "$CPUSER" "$CRON_TMP" && ok "Cron OK." || warn "Cron fail."
+  echo "${bak_h} */5 * * * cd ${DOCROOT}/cronbot && ${PHPCLI} backupbot.php >/dev/null 2>&1" >> "$CRON_TMP"
+  crontab -u "$CPUSER" "$CRON_TMP" && ok "Cron OK (stagger ${stag}s, backup min ${bak_h})." || warn "Cron fail."
   rm -f "$CRON_TMP"
+}
+
+# Truncate oversized logs / clear bot junk (safe).
+cleanup_one_bot(){
+  local freed=0 sz f
+  [ -n "${DOCROOT:-}" ] && [ -d "$DOCROOT" ] || return 1
+  # error_log + *.log under docroot
+  while IFS= read -r f; do
+    [ -f "$f" ] || continue
+    sz=$(stat -c%s "$f" 2>/dev/null || echo 0)
+    if [ "${sz:-0}" -gt "${LOG_MAX_BYTES:-1048576}" ]; then
+      : > "$f"
+      chown "${CPUSER}:${CPUSER}" "$f" 2>/dev/null || true
+      freed=$((freed + sz))
+      info "Truncated $(basename "$f") ($(( sz / 1024 ))KB) @ ${DOMAIN}"
+    fi
+  done < <(find "$DOCROOT" -type f \( -name error_log -o -name '*.log' \) 2>/dev/null)
+
+  # common junk dirs (agar bashe)
+  for f in "$DOCROOT/tmp" "$DOCROOT/cache" "$DOCROOT/sessions"; do
+    if [ -d "$f" ]; then
+      find "$f" -type f -mtime +2 -delete 2>/dev/null || true
+    fi
+  done
+  # Mirza sometimes leaves random .txt debug dumps in docroot
+  find "$DOCROOT" -maxdepth 1 -type f -name '*.txt' -size +100k -mtime +3 -delete 2>/dev/null || true
+
+  echo "$freed"
+}
+
+do_cleanup(){
+  need_root || return 1; ensure_meta; load_account
+  echo -e "\n${C_BOLD}==== Cleanup bot logs / junk ====${CR}"
+  local d total=0 got
+  if [ -z "$(list_bot_domains)" ]; then
+    warn "Bot nist."
+    return 0
+  fi
+  while IFS= read -r d; do
+    # shellcheck disable=SC1090
+    source "$(bot_meta_path "$d")"
+    got="$(cleanup_one_bot || echo 0)"
+    total=$((total + ${got:-0}))
+  done < <(list_bot_domains)
+
+  # server-side light cleanup
+  journalctl --vacuum-size=100M >/dev/null 2>&1 || true
+  find /tmp -xdev -type f -name 'mirza*' -mtime +1 -delete 2>/dev/null || true
+  find /root -maxdepth 1 -type f -name '*-before-uninstall-*.sql' -mtime +14 -delete 2>/dev/null || true
+  find /root -maxdepth 1 -type f -name 'backup_*.sql' -mtime +7 -delete 2>/dev/null || true
+
+  ok "Cleanup done. ~$(( total / 1024 / 1024 ))MB logs truncated (approx)."
+  free -h | head -2
+  echo
+}
+
+do_optimize(){
+  need_root || return 1; need_tools || return 1; ensure_meta; load_account
+  echo -e "\n${C_BOLD}==== Optimize bots / server load ====${CR}"
+  warn "Logs clean + cron stagger (kamtar spike) + optional weekly cleanup cron."
+  do_cleanup
+
+  echo
+  info "Reinstall crons (stagger) baraye hame bot-ha..."
+  local d n=0
+  while IFS= read -r d; do
+    # shellcheck disable=SC1090
+    source "$(bot_meta_path "$d")"
+    install_crons
+    n=$((n + 1))
+  done < <(list_bot_domains)
+  ok "${n} bot cron refresh shod."
+
+  # swappiness soft (idempotent)
+  if [ "$(sysctl -n vm.swappiness 2>/dev/null || echo 60)" -gt 10 ]; then
+    echo 'vm.swappiness=10' >/etc/sysctl.d/99-swappiness.conf
+    sysctl -p /etc/sysctl.d/99-swappiness.conf >/dev/null 2>&1 || true
+    ok "vm.swappiness=10"
+  fi
+
+  echo
+  read -rp "  Weekly cleanup cron (Yekshanbe 04:10)? (y/n) [y]: " yc
+  yc="${yc:-y}"
+  if [ "$yc" = "y" ] || [ "$yc" = "Y" ]; then
+    local CRON_TMP
+    CRON_TMP="$(mktemp)"
+    crontab -l 2>/dev/null | grep -v 'mirza cleanup' | grep -v 'mirza optimize' > "$CRON_TMP" || true
+    echo "10 4 * * 0 ${BIN_PATH} cleanup >/dev/null 2>&1" >> "$CRON_TMP"
+    crontab "$CRON_TMP" && ok "Cron weekly: mirza cleanup" || warn "Cron fail."
+    rm -f "$CRON_TMP"
+  fi
+
+  echo
+  ok "Optimize tamom."
+  info "Manual: mirza> cleanup | optimize | refresh-crons"
+  uptime
+  free -h | head -2
+  echo
+}
+
+do_refresh_crons(){
+  need_root || return 1; need_tools || return 1; ensure_meta
+  echo -e "\n${C_BOLD}==== Refresh all bot crons (stagger) ====${CR}"
+  local d n=0
+  while IFS= read -r d; do
+    # shellcheck disable=SC1090
+    source "$(bot_meta_path "$d")"
+    install_crons
+    n=$((n + 1))
+  done < <(list_bot_domains)
+  ok "${n} bot updated."
+  echo
 }
 
 download_mirza_to(){
@@ -1341,6 +1470,9 @@ cat <<EOF
     ${C_OK}renew${CR}         Reset cycle ba'd az daryaft pool
     ${C_OK}check-renewals${CR} Send alert Telegram (3 roz ghabl)
     ${C_OK}notify-setup${CR}   Set notify ID + cron roozane
+    ${C_OK}cleanup${CR}       Pak kardan log/junk bot-ha
+    ${C_OK}optimize${CR}      Cleanup + cron stagger + weekly clean
+    ${C_OK}refresh-crons${CR}  Dobare nasb cron hame bot-ha (stagger)
     ${C_OK}update${CR}        Update code-e yek bot
     ${C_OK}update-all${CR}    Update hame bot ha
     ${C_OK}self-update${CR}   Update khode CLI mirza (az GitHub)
@@ -1405,6 +1537,9 @@ run_cmd(){
     renew)       do_renew ;;
     check-renewals|renewal-check) do_check_renewals ;;
     notify-setup|setup-notify) do_notify_setup ;;
+    cleanup|clean|gc) do_cleanup ;;
+    optimize|perf) do_optimize ;;
+    refresh-crons|fix-crons|reinstall-crons) do_refresh_crons ;;
     update)      do_update ;;
     update-all)  do_update_all ;;
     restore)     do_restore ;;
@@ -1427,7 +1562,7 @@ repl(){
   need_root || exit 1
   ensure_meta
   echo -e "\n${C_INFO}${C_BOLD}  Mirza cPanel CLI${CR}  v${VERSION}"
-  echo -e "  ${C_DIM}help | install | list | renewals | renew | notify-setup | check-renewals | self-update | exit${CR}\n"
+  echo -e "  ${C_DIM}help | install | list | cleanup | optimize | renewals | renew | self-update | exit${CR}\n"
   local line
   while true; do
     # readline if available
