@@ -468,13 +468,15 @@ composer_install_bot(){
   php="$(php_bin)"
   comp="$(ensure_composer)" || return 1
   owner="$(stat -c '%U' "$dest" 2>/dev/null || echo root)"
+  # --ignore-platform-req=ext-fileinfo: some EA PHP CLI builds miss fileinfo in CLI; web PHP often has it
+  local cargs=(install --no-dev --optimize-autoloader --working-dir="$dest" --ignore-platform-req=ext-fileinfo)
   if [ "$owner" != "root" ] && id "$owner" >/dev/null 2>&1; then
-    sudo -u "$owner" "$php" -d allow_url_fopen=1 "$comp" install --no-dev --optimize-autoloader --working-dir="$dest" \
+    sudo -u "$owner" "$php" -d allow_url_fopen=1 "$comp" "${cargs[@]}" \
       >/dev/null 2>&1 \
-      || "$php" -d allow_url_fopen=1 "$comp" install --no-dev --optimize-autoloader --working-dir="$dest" >/dev/null 2>&1 \
+      || "$php" -d allow_url_fopen=1 "$comp" "${cargs[@]}" >/dev/null 2>&1 \
       || { warn "composer install fail — dasti: cd $dest && composer install --no-dev"; return 1; }
   else
-    "$php" -d allow_url_fopen=1 "$comp" install --no-dev --optimize-autoloader --working-dir="$dest" >/dev/null 2>&1 \
+    "$php" -d allow_url_fopen=1 "$comp" "${cargs[@]}" >/dev/null 2>&1 \
       || { warn "composer install fail."; return 1; }
   fi
   [ -n "${CPUSER:-}" ] && chown -R "${CPUSER}:${CPUSER}" "$dest/vendor" 2>/dev/null || true
