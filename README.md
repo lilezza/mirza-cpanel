@@ -202,6 +202,10 @@ Kode asli bot: [mahdiMGF2/mirzabot](https://github.com/mahdiMGF2/mirzabot)
 
 ### Changelog
 
+**v1.4.0**
+- Fix bot 500 ba'd az update: Mirza jadid `vendor/` (composer) mikhad — `install` / `update` alan `composer install --no-dev` mizanand
+- Bedoon `vendor/autoload.php` webhook = 500 Internal Server Error
+
 **v1.3.9**
 - `cleanup` — truncate `error_log` / log-haye bozorg, junk tmp, SQL backup kohne
 - `optimize` — cleanup + **cron stagger** (bot-ha yek-ja Apache ro spike nemikonan) + curl `--max-time` + weekly cleanup cron

@@ -13,7 +13,7 @@
 ###############################################################################
 set -u
 
-VERSION="1.3.9"
+VERSION="1.4.0"
 PHP_EA="ea-php82"
 REPO_TAR="https://github.com/mahdiMGF2/mirzabot/archive/refs/heads/main.tar.gz"
 REPO_CLI="https://raw.githubusercontent.com/lilezza/mirza-cpanel/main/mirza-cpanel.sh"
@@ -440,6 +440,52 @@ do_refresh_crons(){
   echo
 }
 
+ensure_composer(){
+  if [ -x /usr/local/bin/composer ]; then
+    echo /usr/local/bin/composer
+    return 0
+  fi
+  info "Install composer..."
+  local setup
+  setup="$(mktemp)"
+  curl -fsSL https://getcomposer.org/installer -o "$setup" || { rm -f "$setup"; bad "Composer download fail."; return 1; }
+  "$(php_bin)" -d allow_url_fopen=1 "$setup" --install-dir=/usr/local/bin --filename=composer >/dev/null 2>&1 \
+    || { rm -f "$setup"; bad "Composer install fail."; return 1; }
+  rm -f "$setup"
+  [ -x /usr/local/bin/composer ] || { bad "Composer nist."; return 1; }
+  echo /usr/local/bin/composer
+}
+
+# Mirza main now needs vendor/ (QR + PhpSpreadsheet). Must run after extract.
+composer_install_bot(){
+  local dest="${1:-$DOCROOT}" php comp owner
+  [ -f "$dest/composer.json" ] || { info "composer.json nist — skip."; return 0; }
+  if [ -f "$dest/vendor/autoload.php" ]; then
+    ok "vendor/autoload.php OK."
+    return 0
+  fi
+  info "composer install → $dest"
+  php="$(php_bin)"
+  comp="$(ensure_composer)" || return 1
+  owner="$(stat -c '%U' "$dest" 2>/dev/null || echo root)"
+  if [ "$owner" != "root" ] && id "$owner" >/dev/null 2>&1; then
+    sudo -u "$owner" "$php" -d allow_url_fopen=1 "$comp" install --no-dev --optimize-autoloader --working-dir="$dest" \
+      >/dev/null 2>&1 \
+      || "$php" -d allow_url_fopen=1 "$comp" install --no-dev --optimize-autoloader --working-dir="$dest" >/dev/null 2>&1 \
+      || { warn "composer install fail — dasti: cd $dest && composer install --no-dev"; return 1; }
+  else
+    "$php" -d allow_url_fopen=1 "$comp" install --no-dev --optimize-autoloader --working-dir="$dest" >/dev/null 2>&1 \
+      || { warn "composer install fail."; return 1; }
+  fi
+  [ -n "${CPUSER:-}" ] && chown -R "${CPUSER}:${CPUSER}" "$dest/vendor" 2>/dev/null || true
+  if [ -f "$dest/vendor/autoload.php" ]; then
+    ok "composer vendor OK."
+  else
+    bad "vendor/autoload.php hanuz nist."
+    return 1
+  fi
+}
+
 download_mirza_to(){
   local dest="$1" TMP
   TMP="$(mktemp -d)"
@@ -808,6 +854,7 @@ update_one_bot(){
   cp -a "$CFG_BAK" "$DOCROOT/config.php"
   [ -d "$WELL_BAK" ] && cp -a "$WELL_BAK" "$DOCROOT/.well-known"
   fix_dirs
+  composer_install_bot "$DOCROOT" || warn "composer fail — bot 500 mide ta vendor nasb she."
   patch_mirza_known_bugs
   run_table_php
   install_crons
@@ -858,6 +905,7 @@ do_install(){
   download_mirza_to "$DOCROOT" || return 1
   write_config || return 1
   fix_dirs
+  composer_install_bot "$DOCROOT" || warn "composer fail — bot 500 mide ta vendor nasb she."
   patch_mirza_known_bugs
   run_table_php
   wait_ssl
